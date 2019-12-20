@@ -1,0 +1,97 @@
+def generate_model():
+    # target location
+    shape_of_target_location_placeholder = [batch_size, 2]    # each row of target_location is [target_x, target_y]
+
+
+    # PPC layer
+    shape_of_W_in = [4, number_of_PPC_neuron]
+    initialize W_in with positive uniformly distributed random numbers
+    assign_W_in = assign(W_in, relu(W_in))
+
+    shape_of_W_rec_PPC = [number_of_PPC_neuron, number_of_PPC_neuron]
+    subject W_rec_PPC to Dale's law
+    initialize W_rec_PPC with normalized and balanced uniformly distributed random numbers
+    shape_of_bias_PPC = [1, number_of_PPC_neuron]
+    initialize bias_PPC with zeros
+    
+    initialize PPC_activity with zeros
+
+
+    # PMC layer
+    shape_of_W_ff = [number_of_PPC_neuron, number_of_PMC_neuron]
+    initialize W_ff with positive uniformly distributed random numbers
+    assign_W_ff = assign(W_ff, relu(W_ff))
+    
+    shape_of_W_rec_PMC = [number_of_PMC_neuron, number_of_PMC_neuron]
+    subject W_rec_PMC to Dale's law
+    initialize W_rec_PMC with normalized and balanced uniformly distributed random numbers
+    shape_of_bias_PMC = [1, number_of_PMC_neuron]
+    initialize bias_PMC with zeros
+    
+    initialize PMC_activity with zeros
+
+
+    # default output
+    shape_of_W_out = [number_of_PMC_neuron, 2]
+    initialize W_out with positive uniformly distributed random numbers
+    
+    
+    # inputs and target velocity are computed dynamically during forward passing
+
+
+    # BCI output
+    # L and hence BCI output can only be decided after the network is trained
+    initialize L with random numbers
+    shape_of_L = [number_of_PMC_neuron, dimension_of_manifold]
+    # column space of L defines the intrinsic manifold of PMC neuron activty, PMC_firing_rate ~ N(z * L + miu, Psi)
+    W_L = (L.T * L + Psi)^(-1) * L.T
+    W' = (W_L.T * W_L)^(-1) * W_L.T * W_out
+    
+    shape_of_permutation_placeholder = [None, None]
+    if perturbation_type == None:
+        W_bci_out = W_L * W'
+    elif perturbation_type == within_manifold_perturbation:
+        W_bci_out = W_L * permutation * W'
+    elif perturbation_type == outside_manifold_perturbation:
+        W_bci_out = permutation * W_L * W'
+    
+    
+def forward_passing(time_step, delta_t):
+    hand_location = zeros([batch_size, 2])
+    input_bias = ones([batch_size, 4]) * input_bias_value
+    beta = max_velocity / l2_norm(target_location, axis=1)
+    total_error = 0
+    for i in range(time_step):
+        input_noise = random([batch_size, 4]) * input_noise_std
+        PPC_recurrent_noise = random([batch_size, number_of_PPC_neuron]) * PPC_recurrent_noise_std
+        PMC_recurrent_noise = random([batch_size, number_of_PMC_neuron]) * PMC_recurrent_noise_std
+        input = concate(target_location, hand_location) + input_bias + input_noise
+        PPC_activity = (1-alpha) * PPC_activity + alpha * (PPC_activity * W_rec_PPC + relu(input) * W_in + bias_PPC + PPC_recurrent_noise)
+        PPC_firing_rate = relu(next_PPC_activity)
+        PMC_activity = (1-alpha) * PMC_activity + alpha * (PMC_activity * W_rec_PMC + PPC_firing_rate * W_ff + bias_PMC + PMC_recurrent_noise)
+        PMC_firing_rate = relu(next_PMC_activity)
+        if output_method == original_output:
+            output = PMC_firing_rate * W_out
+        elif output_method == bci_output:
+            output = PMC_firing_rate * W_bci_out
+        target_output_in_Cartesian = (target_location - hand_location) * beta   # pointwise_multiplication
+        target_output_in_polar = transform_to_polar(target_output_in_Cartesian)
+        hand_location = hand_location + output * delta_t
+        error = mean(l2_norm(output - target_output_in_polar, axis=1))
+        total_error += error
+    loss = mean(total_error) + normalization_terms
+
+
+def train():
+    optimizer = AdamOptimizer(learning_rate)
+    gradients_dict = pick_mutable_variables(optimizer.compute_gradients(loss))   # In our model, only some of the weights/bias are mutable during training
+    gradients_dict = constrain_maximum_gradient(gradients_dict)
+    optimize = optimizer.apply_gradients(gradients_dict)
+    permutation_matrix = generate_permutation(perturbation_type)
+    with sess:
+        for batch_idx in range(number_of_batch):
+            target_location_batch = batch_generation()
+            if output_method == original_output or outperturbation_type == None:
+                sess.run(optimize, feed_dict={target_location_placeholder:target_location_batch})
+            else:
+                sess.run(optimize, feed_dict={target_location_placeholder:target_location_batch, permutation_placeholder:permutation_matrix})
